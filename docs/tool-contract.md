@@ -55,6 +55,7 @@ class ToolResult:
 
 class Channel(ABC):
     name: str                      # имя в Registry: "log", "webhook"
+    recipient_format: str          # описание формата recipient для GET /channels
     max_message_length: int = 4096
 
     def validate(self, recipient: str, message: str) -> list[FieldError]:
@@ -77,7 +78,7 @@ class Channel(ABC):
 | Параметр | Что это |
 |---|---|
 | `recipient` | Адрес получателя; формат зависит от канала (для `webhook` это URL, для `log` метка) |
-| `message` | Текст сообщения, 1–4096 символов |
+| `message` | Текст сообщения, 1–4096 символов Unicode (считаются символы, а не байты) |
 | `ctx` | `notification_id` и `correlation_id`; нужны для заголовков и логов, на результат доставки не влияют |
 
 ## Что Tool возвращает
@@ -97,7 +98,8 @@ class Channel(ABC):
 | Получатель недоступен, медленный, отвечает не так | `ToolResult(ok=False, reason=...)`, исключения нет | `Dispatcher` переводит уведомление в `failed` с этой причиной |
 | `send` вызван с некорректными параметрами | `ToolResult(ok=False, reason=INVALID_PARAMS)`, сеть не вызывается | То же; на практике не случается, потому что параметры проверены раньше |
 | Ошибка в коде Tool (неожиданное исключение) | Исключение | `Dispatcher` его перехватывает, пишет в лог и ставит `failed` с `internal_error`; воркер не останавливается |
-| Канала нет в `Registry` | `Registry.get` выбрасывает `UnknownChannel` | API отвечает `422 unknown_channel` (до сохранения) |
+| Канала нет в `Registry` при создании | `Registry.get` выбрасывает `UnknownChannel` | API отвечает `422 unknown_channel` (до сохранения) |
+| Канала нет в `Registry` при отправке (уведомление сохранено, а канал потом убрали из конфигурации) | `Registry.get` выбрасывает `UnknownChannel` внутри `Dispatcher` | `Dispatcher` перехватывает, канал не вызывается, ставит `failed` с `internal_error` и `detail = "channel not registered"`; воркер не останавливается |
 
 Правило: **Tool не бросает исключений из-за поведения получателя**. Исключение означает ошибку в нашем коде.
 
