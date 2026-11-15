@@ -1,0 +1,579 @@
+openapi: 3.0.3
+info:
+  title: Notify API
+  version: 0.2.0
+  description: |
+    HTTP API сервиса уведомлений Notify.
+
+    **Единый формат ошибок.** Любая ошибка (4xx и 5xx, кроме `503` у `/health`) возвращается
+    в виде `{"error": {"code", "message", "details", "correlation_id"}}` (схема `Error`).
+    Поле `details` всегда объект; для ошибок валидации в нём список `fields` с проблемными полями.
+
+    **Correlation ID.** Клиент может передать заголовок `X-Correlation-ID`; если его нет, сервис
+    генерирует значение сам. Оно возвращается в заголовке `X-Correlation-ID` каждого ответа
+    и в поле `error.correlation_id`.
+
+    **Жизненный цикл.** `accepted → sending → delivered | failed`, `accepted → cancelled`.
+    Все остальные переходы запрещены (см. docs/state-machine.md). Из API инициируется только отмена.
+
+    **Гарантия доставки** «хотя бы один раз»: получатель webhook отсекает дубли по `X-Notification-Id`.
+
+    **Неизвестный путь** даёт `404 not_found` в том же формате.
+
+    **Аутентификации в первой версии нет** (docs/adr/0003-no-authentication.md).
+
+    **Неожиданные ошибки сервера** возвращаются как `500 internal_error` в том же формате.
+    Сбой внешнего получателя на запросы клиента к API не влияет: он виден только в статусе
+    уведомления (`failed` и причина).
+servers:
+  - url: http://localhost:8000
+    description: Локальный запуск
+
+tags:
+  - name: notifications
+  - name: system
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Проверка живости сервиса и доступности БД
+      operationId: health
+      responses:
+        '200':
+          description: Сервис и БД работают
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+              example:
+                status: ok
+                checks: { database: ok }
+        '503':
+          description: БД недоступна
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+              example:
+                status: unavailable
+                checks: { database: down }
+
+  /channels:
+    get:
+      tags: [system]
+      summary: Список зарегистрированных каналов
+      operationId: listChannels
+      responses:
+        '200':
+          description: Каналы из Registry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [channels]
+                properties:
+                  channels:
+                    type: array
+                    items: { $ref: '#/components/schemas/Channel' }
+              example:
+                channels:
+                  - name: log
+                    recipient_format: "Непустая метка до 255 символов"
+                    max_message_length: 4096
+                  - name: webhook
+                    recipient_format: "Абсолютный URL http(s), до 2048 символов"
+                    max_message_length: 4096
+
+  /notifications:
+    post:
+      tags: [notifications]
+      summary: Создать уведомление
+      description: |
+        Порядок проверок: размер тела (`413`) → валидность JSON (`400 bad_request`) →
+        заголовок `Idempotency-Key` (`400 missing_idempotency_key`, `422 invalid_params`) →
+        канал (`422 unknown_channel`) → параметры канала (`422 invalid_params`) →
+        работа с ключом идемпотентности (`201`, `200`, `409`).
+        Некорректный запрос ничего не сохраняет и ключ не занимает.
+        Канал в этом запросе не вызывается: отправляет фоновый воркер.
+      operationId: createNotification
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: |
+            Ключ идемпотентности: 1–255 видимых ASCII-символов, рекомендуется UUID.
+            Отсутствие или пустое значение даёт `400 missing_idempotency_key`
+            (обрабатывает приложение, а не валидатор схемы), недопустимые символы или длина — `422 invalid_params`.
+            Повтор с тем же ключом и тем же телом возвращает `200` с тем же уведомлением
+            в его текущем состоянии; с другим телом — `409 idempotency_key_conflict`.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+            pattern: '^[\x21-\x7E]+$'
+          example: 3f0c9a52-6f5e-4c53-9d3c-0a8f1b2c7d11
+        - in: header
+          name: X-Correlation-ID
+          required: false
+          description: Идентификатор запроса для диагностики; если не передан, генерируется сервисом
+          schema: { type: string, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationCreate' }
+            example:
+              channel: webhook
+              recipient: "https://example.org/hook"
+              message: "Сборка завершена"
+      responses:
+        '201':
+          description: Уведомление принято и сохранено в состоянии `accepted`
+          headers:
+            X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '200':
+          description: Идемпотентный повтор — возвращено ранее созданное уведомление в текущем состоянии
+          headers:
+            X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    get:
+      tags: [notifications]
+      summary: Список уведомлений с фильтром по статусу
+      operationId: listNotifications
+      parameters:
+        - in: query
+          name: status
+          description: Неизвестное значение даёт `422 invalid_params`
+          schema: { $ref: '#/components/schemas/NotificationStatus' }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Страница уведомлений, новые первыми
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  total:
+                    type: integer
+                    description: Общее число уведомлений по фильтру
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /notifications/{id}:
+    get:
+      tags: [notifications]
+      summary: Получить уведомление с историей попыток
+      operationId: getNotification
+      parameters:
+        - $ref: '#/components/parameters/NotificationId'
+      responses:
+        '200':
+          description: Уведомление найдено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationDetail' }
+              examples:
+                delivered_after_retry:
+                  summary: Доставлено со второй попытки
+                  value:
+                    id: 7b1f6f5e-2f4a-4a43-8f8e-6a1c2d3e4f50
+                    channel: webhook
+                    recipient: "https://example.org/hook"
+                    message: "Сборка завершена"
+                    status: delivered
+                    failure_reason: null
+                    failure_detail: null
+                    created_at: "2026-11-15T10:00:00Z"
+                    updated_at: "2026-11-15T10:00:03Z"
+                    attempts:
+                      - number: 1
+                        started_at: "2026-11-15T10:00:01Z"
+                        duration_ms: 120
+                        outcome: failure
+                        status_code: 503
+                        reason: receiver_error
+                      - number: 2
+                        started_at: "2026-11-15T10:00:02Z"
+                        duration_ms: 95
+                        outcome: success
+                        status_code: 200
+                        reason: null
+                failed_timeout:
+                  summary: Не доставлено, получатель молчит
+                  value:
+                    id: 0d9c3b7a-9a77-4e58-8b2f-1c6e5a4d3b21
+                    channel: webhook
+                    recipient: "https://example.org/slow"
+                    message: "Сборка завершена"
+                    status: failed
+                    failure_reason: timeout
+                    failure_detail: "No response within 5 s on 3 attempts"
+                    created_at: "2026-11-15T10:05:00Z"
+                    updated_at: "2026-11-15T10:05:17Z"
+                    attempts:
+                      - { number: 1, started_at: "2026-11-15T10:05:01Z", duration_ms: 5000, outcome: failure, status_code: null, reason: timeout }
+                      - { number: 2, started_at: "2026-11-15T10:05:07Z", duration_ms: 5000, outcome: failure, status_code: null, reason: timeout }
+                      - { number: 3, started_at: "2026-11-15T10:05:13Z", duration_ms: 5000, outcome: failure, status_code: null, reason: timeout }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /notifications/{id}/cancel:
+    post:
+      tags: [notifications]
+      summary: Отменить уведомление (только из состояния accepted)
+      description: |
+        Условный переход `accepted → cancelled`. Из `sending`, `delivered`, `failed`
+        и `cancelled` (повторная отмена) возвращается `409 invalid_transition`.
+        Если отмена и захват воркером приходят одновременно, применяется ровно одна операция.
+      operationId: cancelNotification
+      parameters:
+        - $ref: '#/components/parameters/NotificationId'
+      responses:
+        '200':
+          description: Уведомление переведено в `cancelled`, канал не вызывался
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  headers:
+    CorrelationId:
+      description: Идентификатор запроса (из запроса клиента или сгенерированный)
+      schema: { type: string }
+
+  parameters:
+    NotificationId:
+      in: path
+      name: id
+      required: true
+      description: |
+        Идентификатор уведомления (UUID). Любой `id`, которого нет, включая значение
+        неверного формата, даёт `404 not_found`, чтобы не раскрывать, что именно не так.
+      schema: { type: string }
+
+  schemas:
+    NotificationStatus:
+      type: string
+      enum: [accepted, sending, delivered, failed, cancelled]
+
+    FailureReason:
+      type: string
+      description: |
+        Причина статуса `failed`. `interrupted` ставит восстановление после сбоя,
+        остальные — результат работы канала и Dispatcher.
+      enum:
+        - timeout
+        - rejected_by_receiver
+        - receiver_error
+        - bad_response
+        - interrupted
+        - invalid_params
+        - internal_error
+
+    AttemptFailureReason:
+      type: string
+      description: Причина неудачной попытки (то же, что `FailureReason`, но без `interrupted`)
+      enum:
+        - timeout
+        - rejected_by_receiver
+        - receiver_error
+        - bad_response
+        - invalid_params
+        - internal_error
+
+    Channel:
+      type: object
+      required: [name, recipient_format, max_message_length]
+      properties:
+        name:
+          type: string
+          example: webhook
+        recipient_format:
+          type: string
+          description: Описание формата поля `recipient` для канала
+          example: "Абсолютный URL http(s), до 2048 символов"
+        max_message_length:
+          type: integer
+          example: 4096
+
+    NotificationCreate:
+      type: object
+      required: [channel, recipient, message]
+      properties:
+        channel:
+          type: string
+          description: Имя канала из `GET /channels`; неизвестное даёт `422 unknown_channel`
+          example: webhook
+        recipient:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: Формат зависит от канала (проверяет `validate` канала)
+          example: "https://example.org/hook"
+        message:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Длина считается в символах Unicode, а не в байтах
+          example: "Сборка завершена"
+
+    Notification:
+      type: object
+      required: [id, channel, recipient, message, status, failure_reason, failure_detail, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        channel: { type: string }
+        recipient: { type: string }
+        message: { type: string }
+        status: { $ref: '#/components/schemas/NotificationStatus' }
+        failure_reason:
+          type: string
+          nullable: true
+          enum: [timeout, rejected_by_receiver, receiver_error, bad_response, interrupted, invalid_params, internal_error, null]
+          description: Причина (см. схему `FailureReason`); задана только при `status = failed`
+        failure_detail:
+          type: string
+          nullable: true
+          maxLength: 200
+          description: Краткое пояснение, без тела ответа получателя
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    NotificationDetail:
+      allOf:
+        - $ref: '#/components/schemas/Notification'
+        - type: object
+          required: [attempts]
+          properties:
+            attempts:
+              type: array
+              description: История попыток доставки по порядку, включая повторы внутри канала
+              items: { $ref: '#/components/schemas/Attempt' }
+
+    Attempt:
+      type: object
+      required: [number, started_at, duration_ms, outcome, status_code, reason]
+      properties:
+        number:
+          type: integer
+          minimum: 1
+          description: Порядковый номер попытки
+        started_at: { type: string, format: date-time }
+        duration_ms: { type: integer, minimum: 0 }
+        outcome:
+          type: string
+          enum: [success, failure]
+        status_code:
+          type: integer
+          nullable: true
+          description: Код ответа получателя, если он был
+        reason:
+          type: string
+          nullable: true
+          enum: [timeout, rejected_by_receiver, receiver_error, bad_response, invalid_params, internal_error, null]
+          description: Причина (см. схему `AttemptFailureReason`); задана только при `outcome = failure`
+
+    Health:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        checks:
+          type: object
+          required: [database]
+          properties:
+            database:
+              type: string
+              enum: [ok, down]
+
+    FieldProblem:
+      type: object
+      required: [field, problem]
+      properties:
+        field:
+          type: string
+          description: Поле тела запроса, query-параметр или заголовок (например, `recipient`, `Idempotency-Key`)
+        problem:
+          type: string
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details, correlation_id]
+          properties:
+            code:
+              type: string
+              description: Машинный код ошибки
+              enum:
+                - bad_request
+                - missing_idempotency_key
+                - idempotency_key_conflict
+                - unknown_channel
+                - invalid_params
+                - not_found
+                - invalid_transition
+                - payload_too_large
+                - internal_error
+            message:
+              type: string
+              description: Человекочитаемое описание
+            details:
+              type: object
+              additionalProperties: true
+              description: |
+                Контекст ошибки. Для `invalid_params` — `{"fields": [FieldProblem, ...]}`,
+                для `invalid_transition` — `notification_id`, `current_status`, `requested_status`,
+                для `unknown_channel` — `channel` и `available`. Если нечего добавить, пустой объект.
+            correlation_id:
+              type: string
+              description: Идентификатор запроса для диагностики по логам
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос (не JSON, нет `Idempotency-Key`)
+      headers:
+        X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            bad_request:
+              value:
+                error:
+                  code: bad_request
+                  message: "Request body is not valid JSON"
+                  details: {}
+                  correlation_id: "a1b2c3d4"
+            missing_idempotency_key:
+              value:
+                error:
+                  code: missing_idempotency_key
+                  message: "Header Idempotency-Key is required"
+                  details: { header: Idempotency-Key }
+                  correlation_id: "a1b2c3d4"
+
+    NotFound:
+      description: Уведомление не найдено (в том числе `id` неверного формата)
+      headers:
+        X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: not_found
+              message: "Notification not found"
+              details: { notification_id: "7b1f6f5e-2f4a-4a43-8f8e-6a1c2d3e4f50" }
+              correlation_id: "a1b2c3d4"
+
+    IdempotencyConflict:
+      description: Тот же `Idempotency-Key` уже использован с другим телом запроса
+      headers:
+        X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: idempotency_key_conflict
+              message: "Idempotency-Key was already used with a different request body"
+              details: { header: Idempotency-Key }
+              correlation_id: "a1b2c3d4"
+
+    InvalidTransition:
+      description: Недопустимый переход состояния (отмена не из `accepted`)
+      headers:
+        X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: invalid_transition
+              message: "Cannot cancel notification in state 'sending'"
+              details:
+                notification_id: "7b1f6f5e-2f4a-4a43-8f8e-6a1c2d3e4f50"
+                current_status: sending
+                requested_status: cancelled
+              correlation_id: "a1b2c3d4"
+
+    PayloadTooLarge:
+      description: Тело запроса больше 64 КиБ
+      headers:
+        X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: payload_too_large
+              message: "Request body must not exceed 65536 bytes"
+              details: { max_bytes: 65536 }
+              correlation_id: "a1b2c3d4"
+
+    ValidationError:
+      description: Ошибка валидации (неизвестный канал или неверные параметры)
+      headers:
+        X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknown_channel:
+              value:
+                error:
+                  code: unknown_channel
+                  message: "Channel 'fax' is not registered"
+                  details: { channel: fax, available: [log, webhook] }
+                  correlation_id: "a1b2c3d4"
+            invalid_params:
+              value:
+                error:
+                  code: invalid_params
+                  message: "Request parameters are invalid"
+                  details:
+                    fields:
+                      - { field: recipient, problem: "must be an absolute http(s) URL" }
+                  correlation_id: "a1b2c3d4"
+
+    InternalError:
+      description: Внутренняя ошибка сервера
+      headers:
+        X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: internal_error
+              message: "Internal server error"
+              details: {}
+              correlation_id: "a1b2c3d4"
