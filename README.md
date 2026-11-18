@@ -2,7 +2,7 @@
 
 Небольшой HTTP-сервис, который принимает запросы «отправь сообщение получателю через канал X», выполняет отправку в фоне и хранит статус и историю попыток по каждому уведомлению.
 
-> Учебный командный проект курса «Программная инженерия». Команда: apexcode
+> Учебный командный проект курса «Программная инженерия». Команда: <!-- TODO: название команды латиницей, ФИО участников -->
 
 ## Какую проблему решает
 
@@ -74,6 +74,21 @@ Python 3.12, FastAPI, SQLAlchemy + Alembic, SQLite → PostgreSQL, httpx, pytest
 docker compose up
 curl http://localhost:8000/health
 ```
+
+## Разработка и тесты
+
+Нужен Python 3.12+.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows (PowerShell): .venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+
+pytest          # все тесты, одна команда
+ruff check .    # линтер
+```
+
+Доменное ядро (`src/notify/domain`, `src/notify/channels`) не импортирует веб-фреймворк, БД и HTTP-клиент; это проверяет `tests/test_architecture.py`.
 
 ## Документы проекта
 
