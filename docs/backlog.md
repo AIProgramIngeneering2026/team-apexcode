@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 1 | Скелет репозитория, структура пакетов, линтер, README | infra, practice-1 | Участник 1 |
 | 2 | Доменное ядро: `Notification`, состояния, проверка переходов | infra, practice-3 | Участник 1 |
-| 3 | `Registry`, `Dispatcher`, контракт `Channel`, `LogChannel` | infra, practice-3 | Участник 1 |
+| 3 | `Registry`, `LogChannel`, `WebhookChannel` (с портом `HttpSender`) | infra, practice-3 | Участник 2 |
 | 4 | S1: создание уведомления и отправка воркером (webhook) | scenario, practice-4 | Участник 2 |
 | 5 | S2: идемпотентное создание (`Idempotency-Key`) | scenario, practice-4 | Участник 2 |
 | 6 | S3: отмена уведомления | scenario, practice-4 | Участник 1 |
@@ -22,6 +22,8 @@
 | 14 | S6: восстановление зависших `sending` (`interrupted`) и устойчивость воркера к сбоям БД | scenario, practice-6 | Участник 2 |
 | 15 | Документы практики 2: `architecture.md`, `api/openapi.yaml` | docs, practice-2 | Участник 2 |
 | 16 | Документы практики 2: `state-machine.md`, `tool-contract.md`, ADR-0001–0003, `contract-check.md` | docs, practice-2 | Участник 1 |
+| 17 | `Dispatcher`: переходы по `ToolResult`, падение Tool и пропавший канал → `failed` | infra, practice-3 | Участник 1 |
+| 18 | Общие контракты ядра и скелет проекта (PR 0) | infra, practice-3 | Участник 1 |
 
 ## Описание задач
 
@@ -33,9 +35,9 @@
 Класс `Notification` с состояниями и таблицей разрешённых переходов; недопустимый переход приводит к `InvalidTransition`. Ядро не импортирует FastAPI и SQLAlchemy.
 **Готово, когда:** тесты проверяют все разрешённые и все запрещённые переходы (параметризованно).
 
-### 3. Registry, Dispatcher, Channel
-Контракт `Channel` (`validate`, `validate_recipient`, `send(recipient, message, ctx) -> ToolResult`, см. `docs/tool-contract.md`); `Registry.register/get`, ошибка «неизвестный канал» (`UnknownChannel`); `Dispatcher` вызывает канал через `Registry`, применяет переход по `ToolResult` к доменному объекту и БД не трогает; исключение канала и `UnknownChannel` при отправке превращает в `failed` с `internal_error`; `LogChannel`.
-**Готово, когда:** новый тестовый канал подключается без правки `Dispatcher`; тесты на неизвестный канал, неверные параметры и канал, пропавший из `Registry` после создания уведомления.
+### 3. Registry и каналы
+`Registry.register/get`, ошибка «неизвестный канал» (`UnknownChannel`, в ней имя канала и список доступных); `LogChannel`; `WebhookChannel` с внедряемым портом `HttpSender` (Protocol в ядре): `validate_recipient`, классификация ответов по таблице из `docs/tool-contract.md`, повторы, заголовки `X-Notification-Id` и `X-Correlation-ID`. Реальный httpx-адаптер делается в задаче №9, в тестах подставляется fake-sender. Контракт `Channel` и общие типы приходят из задачи №18.
+**Готово, когда:** новый тестовый канал регистрируется без правки остального кода; тесты на неизвестный канал, неверные параметры с указанием поля у обоих каналов и классификацию ответов webhook.
 
 ### 4. S1: создание и отправка
 `POST /notifications`, сохранение в `accepted`, воркер берёт уведомление и вызывает `Dispatcher`. Захват условным `UPDATE ... WHERE status = 'accepted'`, итоговый переход тоже условный (`WHERE status = 'sending'`), опрос и параллельность из настроек (`WORKER_POLL_INTERVAL_SECONDS`, `WORKER_CONCURRENCY`); результат и попытки сохраняет воркер (ADR-0001).
@@ -88,3 +90,11 @@ Middleware `X-Correlation-ID`, JSON-логи (URL получателя пише�
 ### 16. Документы практики 2 (состояния, Tool, ADR, проверка колодой)
 `docs/state-machine.md`, `docs/tool-contract.md`, `docs/adr/0001–0003`, `docs/contract-check.md`.
 **Готово, когда:** выполнены пункты 2, 4–7 задания практики 2.
+
+### 17. Dispatcher
+`Dispatcher` берёт канал из `Registry`, вызывает `send`, применяет переход `sending → delivered / failed` по `ToolResult` к доменному объекту и БД не трогает; исключение канала и `UnknownChannel` при отправке превращает в `failed` с `internal_error` (`failure_detail = "channel not registered"` для пропавшего канала); воркер при этом не останавливается. Конкретных каналов не знает.
+**Готово, когда:** тесты на тестовом канале-заглушке (успех, отказ с причиной, исключение канала, канал пропал из `Registry`); новый канал подключается без правки `Dispatcher`.
+
+### 18. Общие контракты ядра и скелет проекта (PR 0)
+`pyproject.toml`, `.gitignore`, пакеты `src/notify/domain` и `src/notify/channels`; `FailureReason`, ошибки ядра (`InvalidTransition`, `UnknownChannel`, `InvalidParams`), `SendContext`, `Attempt`, `ToolResult` с проверкой инвариантов, `Channel` (`validate`, `ensure_valid`); тест на отсутствие импортов фреймворков и БД в ядре; раздел «Разработка и тесты» в README.
+**Готово, когда:** `pytest` и `ruff check .` проходят в чистом окружении; `tool-contract.md` совпадает с кодом.

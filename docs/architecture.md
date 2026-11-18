@@ -119,7 +119,7 @@ flowchart TB
 | Registry | Соответствие «имя канала → реализация `Channel`», ошибка `UnknownChannel` | Как каналы создаются и настраиваются |
 | Channel (интерфейс) | Контракт: `validate(recipient, message)`, `send(recipient, message, ctx) → ToolResult`; подробности в [tool-contract.md](tool-contract.md) | Любые детали конкретного канала |
 | LogChannel, WebhookChannel, TelegramChannel | Доставка в свой транспорт; формат `recipient` знает только канал | Транспорт, формат запроса, правила повторов |
-| HttpSender | Внутри `WebhookChannel` (и `TelegramChannel`, у каждого свой экземпляр): timeout, повторы, классификация ответа, лимит чтения | httpx и нюансы транспорта; снаружи канала не виден |
+| HttpSender | Порт в ядре, подключается к `WebhookChannel` (и `TelegramChannel`, у каждого свой экземпляр): timeout, повторы, классификация ответа, лимит чтения. Реализация на httpx лежит вне ядра (`src/notify/adapters`, практика 6), в тестах подставляется fake | httpx и нюансы транспорта; снаружи канала не виден |
 | NotificationRepository (порт) | Операции над уведомлениями и попытками, включая условные переходы и вставку с проверкой уникальности ключа | Что за СУБД и как устроен SQL |
 | Storage | Реализация порта: таблица `notifications` (с `idempotency_key` UNIQUE и `request_hash`) и `delivery_attempts`; миграции Alembic | SQLite или PostgreSQL, ORM-маппинг |
 
