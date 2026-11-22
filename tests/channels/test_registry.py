@@ -1,10 +1,10 @@
 import pytest
 
+from notify.channels.http_sender import FakeSender
 from notify.channels.log import LogChannel
 from notify.channels.registry import Registry
 from notify.channels.webhook import WebhookChannel
 from notify.domain.errors import UnknownChannel
-from notify.channels.http_sender import FakeSender
 
 
 def test_registry_returns_registered_channel_instance():
@@ -29,3 +29,25 @@ def test_registry_lists_channel_names_in_stable_order():
     registry = Registry([WebhookChannel(FakeSender()), LogChannel()])
 
     assert registry.names() == ("log", "webhook")
+
+
+def test_registry_rejects_duplicate_name():
+    registry = Registry([LogChannel()])
+
+    with pytest.raises(ValueError):
+        registry.register(LogChannel())
+
+
+def test_registry_rejects_channel_without_name():
+    class Nameless(LogChannel):
+        name = ""
+
+    with pytest.raises(ValueError):
+        Registry([Nameless()])
+
+
+def test_registry_get_unknown_on_empty_registry():
+    with pytest.raises(UnknownChannel) as exc:
+        Registry().get("log")
+
+    assert exc.value.available == ()
