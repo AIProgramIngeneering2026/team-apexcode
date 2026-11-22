@@ -3,6 +3,7 @@ import pytest
 from notify.channels.http_sender import FakeSender
 from notify.channels.webhook import WebhookChannel
 from notify.domain.channel import SendContext
+from notify.domain.errors import InvalidParams
 from notify.domain.failure import FailureReason
 
 CTX = SendContext(notification_id="notification-1", correlation_id="correlation-1")
@@ -89,3 +90,36 @@ def test_webhook_retries_transport_errors(reason):
     assert result.ok is False
     assert result.reason is reason
     assert len(result.attempts) == 3
+
+
+@pytest.mark.parametrize(
+    "recipient",
+    [
+        "https://example.org/hook\n",
+        "https://exa mple.org/hook",
+        "https://example.org/\tpath",
+        "http://",
+        "ftp://example.org",
+        "example.org/hook",
+        "https://example.org:0/hook",
+        "https://example.org:99999/hook",
+    ],
+)
+def test_webhook_rejects_malformed_recipient(recipient):
+    errors = WebhookChannel(FakeSender()).validate(recipient, "Hello")
+
+    assert [error.field for error in errors] == ["recipient"]
+
+
+def test_webhook_ensure_valid_reports_every_bad_field():
+    with pytest.raises(InvalidParams) as exc:
+        WebhookChannel(FakeSender()).ensure_valid("ftp://example.org", "")
+
+    assert exc.value.code == "invalid_params"
+    assert {error.field for error in exc.value.fields} == {"recipient", "message"}
+
+
+def test_webhook_accepts_url_with_port_and_query():
+    errors = WebhookChannel(FakeSender()).validate("http://localhost:8080/hook?token=a", "Hello")
+
+    assert errors == []

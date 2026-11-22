@@ -2,10 +2,10 @@
 
 from urllib.parse import urlsplit
 
+from notify.channels.http_sender import HttpSender
 from notify.domain.channel import Channel, SendContext, ToolResult
 from notify.domain.errors import FieldError
 from notify.domain.failure import FailureReason
-from notify.channels.http_sender import HttpSender
 
 
 class WebhookChannel(Channel):
@@ -18,6 +18,10 @@ class WebhookChannel(Channel):
     def validate_recipient(self, recipient: str) -> list[FieldError]:
         if not isinstance(recipient, str) or not 1 <= len(recipient) <= 2048:
             return [FieldError("recipient", "must be an HTTP(S) URL of 1..2048 characters")]
+
+        # urlsplit молча вырезает \t, \r, \n, поэтому такие символы проверяем до разбора
+        if any(char.isspace() or not char.isprintable() for char in recipient):
+            return [FieldError("recipient", "must not contain spaces or control characters")]
 
         try:
             parsed = urlsplit(recipient)
