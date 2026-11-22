@@ -5,7 +5,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol, TypeAlias
+from typing import Protocol
 
 from notify.domain.channel import Attempt
 from notify.domain.failure import FailureReason
@@ -17,9 +17,13 @@ class HttpSendResult:
 
     attempts: tuple[Attempt, ...]
 
+    def __post_init__(self) -> None:
+        if not self.attempts:
+            raise ValueError("HttpSender must return at least one attempt")
+
     @property
     def ok(self) -> bool:
-        return bool(self.attempts) and self.attempts[-1].ok
+        return self.attempts[-1].ok
 
     @property
     def reason(self) -> FailureReason | None:
@@ -27,7 +31,7 @@ class HttpSendResult:
 
     @property
     def status_code(self) -> int | None:
-        return self.attempts[-1].status_code if self.attempts else None
+        return self.attempts[-1].status_code
 
     @property
     def detail(self) -> str | None:
@@ -51,7 +55,7 @@ class HttpSender(Protocol):
         ...
 
 
-FakeOutcome: TypeAlias = int | FailureReason
+type FakeOutcome = int | FailureReason
 
 
 class FakeSender:
