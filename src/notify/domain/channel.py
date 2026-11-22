@@ -35,6 +35,8 @@ class Attempt:
             raise ValueError("successful attempt must not have a reason")
         if not self.ok and self.reason is None:
             raise ValueError("failed attempt must have a reason")
+        if self.reason is FailureReason.INTERRUPTED:
+            raise ValueError("'interrupted' is set by recovery, not by a Channel")
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,7 @@ class ToolResult:
                 raise ValueError("attempts may be empty only for invalid_params")
         elif self.attempts[-1].ok:
             raise ValueError("failed result cannot end with a successful attempt")
+        # Attempt гарантирует отсутствие INTERRUPTED в reason (см. Attempt.__post_init__)
 
 
 class Channel(ABC):
