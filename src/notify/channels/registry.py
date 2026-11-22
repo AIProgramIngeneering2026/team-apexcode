@@ -16,9 +16,12 @@ class Registry:
 
     def register(self, channel: Channel) -> None:
         """Зарегистрировать канал по его имени."""
-        if not channel.name:
+        name = getattr(channel, "name", "")
+        if not name:
             raise ValueError("Channel name must not be empty")
-        self._channels[channel.name] = channel
+        if name in self._channels:
+            raise ValueError(f"Channel '{name}' is already registered")
+        self._channels[name] = channel
 
     def get(self, name: str) -> Channel:
         """Вернуть канал или выбросить доменную ошибку."""
