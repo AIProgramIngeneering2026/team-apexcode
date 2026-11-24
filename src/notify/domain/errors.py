@@ -60,3 +60,22 @@ class InvalidParams(NotifyError):
         self.fields = fields
         names = ", ".join(f.field for f in fields)
         super().__init__(f"Invalid parameters: {names}")
+
+
+class IdempotencyKeyConflict(NotifyError):
+    """`Idempotency-Key` уже использован с другим телом запроса."""
+
+    code = "idempotency_key_conflict"
+
+    def __init__(self) -> None:
+        super().__init__("Idempotency-Key was already used with a different request body")
+
+
+class NotificationNotFound(NotifyError):
+    """Уведомления с таким `id` нет (в том числе `id` неверного формата)."""
+
+    code = "not_found"
+
+    def __init__(self, notification_id: str) -> None:
+        self.notification_id = notification_id
+        super().__init__("Notification not found")
