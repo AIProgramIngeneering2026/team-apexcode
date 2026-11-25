@@ -40,9 +40,21 @@ def test_core_does_not_import_frameworks_or_db(path):
 
 # --- Зависимости между слоями самого проекта ---
 
-# Что слою импортировать нельзя. Направление: domain ← channels ← adapters / api.
-DOMAIN_FORBIDDEN = ("notify.channels", "notify.adapters", "notify.api")
-CHANNELS_FORBIDDEN = ("notify.adapters", "notify.api")
+# Что слою импортировать нельзя. Направление зависимостей:
+#   domain ← channels, storage ← api, worker ← main (main собирает всё).
+# Внешние слои подключаются к ядру снаружи: через порты `HttpSender`, `NotificationRepository`.
+OUTER_LAYERS = (
+    "notify.adapters",
+    "notify.api",
+    "notify.storage",
+    "notify.worker",
+    "notify.main",
+)
+DOMAIN_FORBIDDEN = ("notify.channels", *OUTER_LAYERS)
+CHANNELS_FORBIDDEN = OUTER_LAYERS
+STORAGE_FORBIDDEN = ("notify.api", "notify.worker", "notify.main")
+API_FORBIDDEN = ("notify.storage", "notify.worker", "notify.main")  # репозиторий внедряется
+WORKER_FORBIDDEN = ("notify.api", "notify.storage", "notify.main")  # только порты ядра
 
 
 def module_of(path: Path) -> tuple[str, bool]:
@@ -109,6 +121,27 @@ def test_channels_do_not_depend_on_adapters_or_api(path):
     assert layer_violations(path, CHANNELS_FORBIDDEN) == set()
 
 
+@pytest.mark.parametrize(
+    "path", sorted((SRC / "storage").rglob("*.py")), ids=lambda p: str(p.relative_to(SRC))
+)
+def test_storage_does_not_depend_on_api_or_worker(path):
+    assert layer_violations(path, STORAGE_FORBIDDEN) == set()
+
+
+@pytest.mark.parametrize(
+    "path", sorted((SRC / "api").rglob("*.py")), ids=lambda p: str(p.relative_to(SRC))
+)
+def test_api_does_not_import_concrete_storage_or_worker(path):
+    """API получает репозиторий и воркер снаружи (`create_app(repo, ...)`), а не импортирует."""
+    assert layer_violations(path, API_FORBIDDEN) == set()
+
+
+def test_worker_depends_only_on_domain_ports():
+    path = SRC / "worker.py"
+    if path.exists():  # воркер появляется в практике 4
+        assert layer_violations(path, WORKER_FORBIDDEN) == set()
+
+
 # --- Сама проверка должна ловить нарушения, включая относительные импорты ---
 
 DISPATCHER = ("notify.domain.dispatcher", False)
@@ -124,6 +157,9 @@ VIOLATIONS = [
     ("from .. import channels", DISPATCHER),
     ("from ..channels import LogChannel", DISPATCHER),
     ("from ..channels.webhook import WebhookChannel", DISPATCHER),
+    ("from notify.storage.sql import SqlNotificationRepository", DISPATCHER),
+    ("from ..storage import sql", DISPATCHER),
+    ("import notify.worker", DISPATCHER),
     ("from .. import channels", DOMAIN_INIT),
     ("from ..channels import LogChannel", DOMAIN_INIT),
 ]
@@ -148,6 +184,11 @@ def test_checker_detects_forbidden_import(source, where):
 def test_checker_allows_legal_import(source, where):
     imports = notify_imports(source, *where)
     assert forbidden_imports(imports, DOMAIN_FORBIDDEN) == set(), source
+
+
+def test_checker_detects_api_importing_storage():
+    imports = notify_imports("from notify.storage.memory import InMemory", "notify.api.app", False)
+    assert "notify.storage.memory" in forbidden_imports(imports, API_FORBIDDEN)
 
 
 def test_relative_import_resolves_to_full_name():

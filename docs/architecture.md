@@ -7,7 +7,7 @@
 - жизненный цикл уведомления и запрещённые переходы — [state-machine.md](state-machine.md);
 - контракт канала (Tool) и два канала — [tool-contract.md](tool-contract.md);
 - контракт API — [api/openapi.yaml](api/openapi.yaml);
-- решения — [ADR-0001 фоновый воркер](adr/0001-background-worker.md), [ADR-0002 ключ идемпотентности](adr/0002-idempotency-key-storage.md), [ADR-0003 без аутентификации](adr/0003-no-authentication.md);
+- решения — [ADR-0001 фоновый воркер](adr/0001-background-worker.md), [ADR-0002 ключ идемпотентности](adr/0002-idempotency-key-storage.md), [ADR-0003 без аутентификации](adr/0003-no-authentication.md), [ADR-0004 порт хранилища](adr/0004-repository-port.md);
 - проверка контракта колодой — [contract-check.md](contract-check.md).
 
 ## Контекстная схема (C4: Context)
@@ -120,7 +120,7 @@ flowchart TB
 | Channel (интерфейс) | Контракт: `validate(recipient, message)`, `send(recipient, message, ctx) → ToolResult`; подробности в [tool-contract.md](tool-contract.md) | Любые детали конкретного канала |
 | LogChannel, WebhookChannel, TelegramChannel | Доставка в свой транспорт; формат `recipient` знает только канал | Транспорт, формат запроса, правила повторов |
 | HttpSender | Порт в ядре, подключается к `WebhookChannel` (и `TelegramChannel`, у каждого свой экземпляр): timeout, повторы, классификация ответа, лимит чтения. Реализация на httpx лежит вне ядра (`src/notify/adapters`, практика 6), в тестах подставляется fake | httpx и нюансы транспорта; снаружи канала не виден |
-| NotificationRepository (порт) | Операции над уведомлениями и попытками, включая условные переходы и вставку с проверкой уникальности ключа | Что за СУБД и как устроен SQL |
+| NotificationRepository (порт) | Операции над уведомлениями и попытками, включая условные переходы и вставку с проверкой уникальности ключа; один метод — одна транзакция ([ADR-0004](adr/0004-repository-port.md)) | Что за СУБД и как устроен SQL |
 | Storage | Реализация порта: таблица `notifications` (с `idempotency_key` UNIQUE и `request_hash`) и `delivery_attempts`; миграции Alembic | SQLite или PostgreSQL, ORM-маппинг |
 
 ## Как архитектура защищена от изменений

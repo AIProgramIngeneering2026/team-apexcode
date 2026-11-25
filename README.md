@@ -82,13 +82,13 @@ curl http://localhost:8000/health
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows (PowerShell): .venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+pip install -e ".[dev,storage,api]"
 
 pytest          # все тесты, одна команда
 ruff check .    # линтер
 ```
 
-Доменное ядро (`src/notify/domain`, `src/notify/channels`) не импортирует веб-фреймворк, БД и HTTP-клиент; это проверяет `tests/test_architecture.py`.
+Доменное ядро (`src/notify/domain`, `src/notify/channels`) не импортирует веб-фреймворк, БД и HTTP-клиент; это проверяет `tests/test_architecture.py`. Он же следит за направлением зависимостей между слоями: `api` не импортирует `storage` и `worker` (репозиторий внедряется), `storage` не знает `api` и воркера.
 
 ## Документы проекта
 
@@ -100,7 +100,8 @@ ruff check .    # линтер
 - Решения (ADR):
   - [ADR-0001](docs/adr/0001-background-worker.md) — отправка фоновым воркером, очередь в БД;
   - [ADR-0002](docs/adr/0002-idempotency-key-storage.md) — ключ идемпотентности хранится в таблице уведомлений;
-  - [ADR-0003](docs/adr/0003-no-authentication.md) — в первой версии API без аутентификации
+  - [ADR-0003](docs/adr/0003-no-authentication.md) — в первой версии API без аутентификации;
+  - [ADR-0004](docs/adr/0004-repository-port.md) — порт хранилища `NotificationRepository`, синхронный, один метод — одна транзакция
 - [docs/contract-check.md](docs/contract-check.md) — проверка контракта колодой К1–К10, раздел «Что предложил ИИ»
 - [docs/backlog.md](docs/backlog.md) — список задач (зеркало issues)
 - [CONTRIBUTING.md](CONTRIBUTING.md) — правила веток, коммитов, review и Definition of Done

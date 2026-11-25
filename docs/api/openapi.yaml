@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Notify API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     HTTP API сервиса уведомлений Notify.
 
@@ -19,6 +19,10 @@ info:
     **Гарантия доставки** «хотя бы один раз»: получатель webhook отсекает дубли по `X-Notification-Id`.
 
     **Неизвестный путь** даёт `404 not_found` в том же формате.
+
+    **Неподдерживаемый метод** на существующем пути (например, `DELETE /notifications/{id}`)
+    даёт `405 method_not_allowed` в том же формате, состояние не меняется. Единственная операция
+    над состоянием уведомления в API — `cancel`.
 
     **Аутентификации в первой версии нет** (docs/adr/0003-no-authentication.md).
 
@@ -157,9 +161,11 @@ paths:
           schema: { $ref: '#/components/schemas/NotificationStatus' }
         - in: query
           name: limit
+          description: Вне диапазона 1–200 или не число — `422 invalid_params`
           schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
         - in: query
           name: offset
+          description: Отрицательное или не число — `422 invalid_params`
           schema: { type: integer, minimum: 0, default: 0 }
       responses:
         '200':
@@ -322,6 +328,11 @@ components:
     NotificationCreate:
       type: object
       required: [channel, recipient, message]
+      additionalProperties: false
+      description: |
+        Лишние поля (например, `status`, `id`, `failure_reason`) не принимаются:
+        `422 invalid_params`, имя поля в `details.fields`, уведомление не создаётся.
+        Значения не строки и `null` тоже дают `422 invalid_params`.
       properties:
         channel:
           type: string
@@ -439,6 +450,7 @@ components:
                 - unknown_channel
                 - invalid_params
                 - not_found
+                - method_not_allowed
                 - invalid_transition
                 - payload_too_large
                 - internal_error
@@ -540,7 +552,7 @@ components:
               correlation_id: "a1b2c3d4"
 
     ValidationError:
-      description: Ошибка валидации (неизвестный канал или неверные параметры)
+      description: Ошибка валидации (неизвестный канал, неверные параметры или лишние поля тела, query-параметры вне диапазона)
       headers:
         X-Correlation-ID: { $ref: '#/components/headers/CorrelationId' }
       content:
@@ -562,6 +574,15 @@ components:
                   details:
                     fields:
                       - { field: recipient, problem: "must be an absolute http(s) URL" }
+                  correlation_id: "a1b2c3d4"
+            unexpected_field:
+              value:
+                error:
+                  code: invalid_params
+                  message: "Request parameters are invalid"
+                  details:
+                    fields:
+                      - { field: status, problem: "unexpected field" }
                   correlation_id: "a1b2c3d4"
 
     InternalError:
